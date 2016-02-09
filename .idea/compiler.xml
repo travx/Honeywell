@@ -17,6 +17,16 @@
       <profile default="true" name="Default" enabled="false">
         <processorPath useClasspath="true" />
       </profile>
+      <profile default="false" name="Annotation profile for Honeywell" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <processorPath useClasspath="true" />
+        <module name="Honeywell" />
+      </profile>
     </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="Honeywell" target="1.7" />
+    </bytecodeTargetLevel>
   </component>
 </project>

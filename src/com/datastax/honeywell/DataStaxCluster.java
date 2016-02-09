@@ -30,6 +30,8 @@ public class DataStaxCluster {
 	private PreparedStatement psGetDevices;
 	private PreparedStatement psGetMetrics;
 	
+	private PreparedStatement psGetCommTasks;
+	private PreparedStatement psSaveCommTask;
 	
 	public DataStaxCluster(String node, String keyspace){
 		setNode(node);
@@ -56,6 +58,10 @@ public class DataStaxCluster {
 		psWriteDeviceIndex = session.prepare("insert into device_index(device_type,firmware_version,monitored_group,os_index,power_type,mac_id) values(?,?,?,?,?,?)");
 		psGetDevices = session.prepare("select mac_id from device_index where device_type=? and firmware_version=? and monitored_group=? and os_index=? and power_type=?");
 		psGetMetrics = session.prepare("select * from metrics_by_mac where metric=? and mac_id=? and date >= ? and date <= ?");
+		
+		//CommTasks
+		psGetCommTasks = session.prepare("select * from commtask_duration where mac_id=? and date >= ? and date <= ?");
+		psSaveCommTask = session.prepare("insert into wo_successfull_commtask_duration(device_type, firmware_version, monitored_group, os_index, power_type, start_date, end_date, rank, mac_id, total_duration_in_millisecs, commtask_count, average_duration) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 	}
 	
 	public void writeRecord(UIData uidata){
@@ -115,6 +121,80 @@ public class DataStaxCluster {
 		}		
 		
 		return worstoffenders;
+	}
+	
+	
+//	For commtasks, use the same index table to find matching mac addresses, then sum the duration for each date range.
+//	
+//	CREATE TABLE commtask_duration
+//	(
+//	       mac_id text,
+//	       date timestamp,
+//	       duration_in_millisecs bigint,
+//	       PRIMARY KEY ((mac_id), date)
+//	);	
+
+	public CommTaskRanking getCommTasks(String device_type, String firmware_version, String monitored_group, String os_index, String power_type, Date startdate, Date enddate, int limit){
+		CommTaskRanking commTasks = new CommTaskRanking(limit);
+		List<ResultSetFuture> futures = new ArrayList<>();
+		
+		//Get the matching mac_ids
+		ResultSet results = session.execute(psGetDevices.bind(device_type,firmware_version,monitored_group,os_index,power_type));
+		
+		//For each mac_id, query for the date range and date range
+		for (Row row : results){
+			futures.add(session.executeAsync(psGetCommTasks.bind(row.getString("mac_id"), startdate, enddate)));
+		}
+		
+		//Summarize the metric for each result
+		//For this example, we are counting the occurances.
+		for (ResultSetFuture future : futures){
+			ResultSet rows = future.getUninterruptibly();
+			CommTask ct = null;
+			for (Row row : rows){
+				if (null == ct){
+					ct = new CommTask(row.getString("mac_id"));
+				}
+				ct.increment(row.getDouble("duration_in_millisecs"));
+			}
+			if (null != ct){
+				commTasks.add(ct);
+			}
+		}
+		
+		//Save the calculated rankings
+		saveCommTaskDuration(device_type, firmware_version, monitored_group, os_index, power_type, startdate, enddate, commTasks);		
+		
+		return commTasks;
+	}	
+	
+
+// Save commtask queries
+//	
+//	CREATE TABLE wo_successfull_commtask_duration
+//	(
+//	       origin text,
+//	       gateway_type text,
+//	       firmware_version text,
+//	       power_type text,
+//	       start_date timestamp,
+//	       end_date timestamp,
+//	       rank int,
+//	       mac_id text,
+//	       total_duration_in_millisecs bigint,
+//	       commtask_count bigint,
+//	       average_duration decimal,
+//	       PRIMARY KEY ((origin, gateway_type, firmware_version, power_type), start_day, end_day, rank)
+//	);
+//
+//  insert into wo_successfull_commtask_duration(device_type, firmware_version, monitored_group, os_index, power_type, start_date, end_date, rank, mac_id, total_duration_in_millisecs, commtask_count, average_duration) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	
+	public void saveCommTaskDuration(String device_type, String firmware_version, String monitored_group, String os_index, String power_type, Date startdate, Date enddate, CommTaskRanking commTasks){
+		int rank=1;
+		for (CommTask commtask: commTasks.getCommTasks()){
+			session.executeAsync(psSaveCommTask.bind(device_type, firmware_version, monitored_group, os_index, power_type, startdate, enddate, rank, commtask.getMac_id(), commtask.getDuration(), commtask.getCommTasks(), commtask.getAverageCommTaskDuration()));
+			rank++;
+		}
 	}
 
 	
